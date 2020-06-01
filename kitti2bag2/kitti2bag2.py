@@ -3,6 +3,8 @@
 
 import sys
 import glob
+import ctypes
+import struct
 
 try:
     import pykitti
@@ -29,6 +31,16 @@ from transforms3d.quaternions import mat2quat as quaternion_from_matrix
 from cv_bridge import CvBridge
 import numpy as np
 import argparse
+
+_DATATYPES = {}
+_DATATYPES[PointField.INT8] = ('b', 1)
+_DATATYPES[PointField.UINT8] = ('B', 1)
+_DATATYPES[PointField.INT16] = ('h', 2)
+_DATATYPES[PointField.UINT16] = ('H', 2)
+_DATATYPES[PointField.INT32] = ('i', 4)
+_DATATYPES[PointField.UINT32] = ('I', 4)
+_DATATYPES[PointField.FLOAT32] = ('f', 4)
+_DATATYPES[PointField.FLOAT64] = ('d', 8)
 
 
 def create_topic(topic_name, msg_type, serialization_format):
@@ -175,17 +187,72 @@ def save_camera_data(bag, kitti_type, kitti, util, bridge, camera, camera_frame_
         camera_info_topic = create_topic(topic_name + '/camera_info', "sensor_msgs/msg/CameraInfo", "cdr")
         bag.create_topic(camera_info_topic)
 
-        camera_topic = create_topic(topic_name, "sensor_msgs/msg/Image", "cdr")
+        camera_topic = create_topic(topic_name + topic_ext, "sensor_msgs/msg/Image", "cdr")
         bag.create_topic(camera_topic)
 
         bag.write((topic_name + topic_ext, serialize_message(image_message), image_message.header.stamp.sec))
         bag.write((topic_name + '/camera_info', serialize_message(calib), calib.header.stamp.sec))
 
 
+# Helper functions from ROS1 http://docs.ros.org/melodic/api/sensor_msgs/html/point__cloud2_8py_source.html
+def _get_struct_fmt(is_bigendian, fields, field_names=None):
+    fmt = '>' if is_bigendian else '<'
+
+    offset = 0
+    for field in (f for f in sorted(fields, key=lambda f: f.offset) if field_names is None or f.name in field_names):
+        if offset < field.offset:
+            fmt += 'x' * (field.offset - offset)
+            offset = field.offset
+        if field.datatype not in _DATATYPES:
+            print('Skipping unknown PointField datatype [%d]' % field.datatype, file=sys.stderr)
+        else:
+            datatype_fmt, datatype_length = _DATATYPES[field.datatype]
+            fmt += field.count * datatype_fmt
+            offset += field.count * datatype_length
+
+    return fmt
+
+# Helper functions from ROS1 http://docs.ros.org/melodic/api/sensor_msgs/html/point__cloud2_8py_source.html
+def create_cloud(header, fields, points):
+    """
+    Create a L{sensor_msgs.msg.PointCloud2} message.
+
+    @param header: The point cloud header.
+    @type  header: L{std_msgs.msg.Header}
+    @param fields: The point cloud fields.
+    @type  fields: iterable of L{sensor_msgs.msg.PointField}
+    @param points: The point cloud points.
+    @type  points: list of iterables, i.e. one iterable for each point, with the
+                   elements of each iterable being the values of the fields for
+                   that point (in the same order as the fields parameter)
+    @return: The point cloud.
+    @rtype:  L{sensor_msgs.msg.PointCloud2}
+    """
+
+    cloud_struct = struct.Struct(_get_struct_fmt(False, fields))
+
+    buff = ctypes.create_string_buffer(cloud_struct.size * len(points))
+
+    point_step, pack_into = cloud_struct.size, cloud_struct.pack_into
+    offset = 0
+    for p in points:
+        pack_into(buff, offset, *p)
+        offset += point_step
+
+    return PointCloud2(header=header,
+                       height=1,
+                       width=len(points),
+                       is_dense=False,
+                       is_bigendian=False,
+                       fields=fields,
+                       point_step=cloud_struct.size,
+                       row_step=cloud_struct.size * len(points),
+                       data=buff.raw)
+
 def save_velo_data(bag, kitti, velo_frame_id, topic_name):
     print("Exporting velodyne data")
 
-    topic = create_topic(topic_name + '/pointcloud', "tf2_msgs/msg/TFMessage", "cdr")
+    topic = create_topic(topic_name + '/pointcloud', "sensor_msgs/msg/PointCloud2", "cdr")
     bag.create_topic(topic)
 
     velo_path = os.path.join(kitti.data_path, 'velodyne_points')
@@ -209,7 +276,7 @@ def save_velo_data(bag, kitti, velo_frame_id, topic_name):
         velo_filename = os.path.join(velo_data_dir, filename)
 
         # read binary data
-        scan = (np.fromfile(velo_filename, dtype=np.float32)).reshape(-1, 4)
+        points = (np.fromfile(velo_filename, dtype=np.float32)).reshape(-1, 4)
 
         # create header
         header = Header()
@@ -217,11 +284,12 @@ def save_velo_data(bag, kitti, velo_frame_id, topic_name):
         header.stamp = Time(seconds=float(datetime.strftime(dt, "%s.%f"))).to_msg()
 
         # fill pcl msg
-        fields = [PointField('x', 0, PointField.FLOAT32, 1),
-                  PointField('y', 4, PointField.FLOAT32, 1),
-                  PointField('z', 8, PointField.FLOAT32, 1),
-                  PointField('i', 12, PointField.FLOAT32, 1)]
-        pcl_msg = pcl2.create_cloud(header, fields, scan)
+        fields = [PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+                  PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+                  PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+                  PointField(name='i', offset=12, datatype=PointField.FLOAT32, count=1)]
+
+        pcl_msg = create_cloud(header, fields, points)
 
         bag.write((topic_name + '/pointcloud', serialize_message(pcl_msg), pcl_msg.header.stamp.sec))
 
