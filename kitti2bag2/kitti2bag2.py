@@ -60,7 +60,7 @@ def save_imu_data(bag, kitti, imu_frame_id, topic_name):
         q = quaternion_from_euler(oxts.packet.roll, oxts.packet.pitch, oxts.packet.yaw)
         imu = Imu()
         imu.header.frame_id = imu_frame_id
-        imu.header.stamp = Time(seconds=float(timestamp.strftime("%s.%f"))).to_msg()
+        imu.header.stamp = Time(nanoseconds=int(float(timestamp.strftime("%s.%f")) * 1e+9)).to_msg()
         imu.orientation.x = q[0]
         imu.orientation.y = q[1]
         imu.orientation.z = q[2]
@@ -71,7 +71,11 @@ def save_imu_data(bag, kitti, imu_frame_id, topic_name):
         imu.angular_velocity.x = oxts.packet.wf
         imu.angular_velocity.y = oxts.packet.wl
         imu.angular_velocity.z = oxts.packet.wu
-        bag.write((topic_name, serialize_message(imu), imu.header.stamp.sec))
+        bag.write((topic_name, serialize_message(imu), timestamp_to_nanoseconds_from_epoch(imu.header.stamp)))
+
+
+def timestamp_to_nanoseconds_from_epoch(timestamp):
+    return int((timestamp.sec + timestamp.nanosec * 1e-9) * 1e+9)
 
 
 def save_dynamic_tf(bag, kitti, kitti_type, initial_time):
@@ -84,7 +88,7 @@ def save_dynamic_tf(bag, kitti, kitti_type, initial_time):
         for timestamp, oxts in zip(kitti.timestamps, kitti.oxts):
             tf_oxts_msg = TFMessage()
             tf_oxts_transform = TransformStamped()
-            tf_oxts_transform.header.stamp = Time(seconds=float(timestamp.strftime("%s.%f"))).to_msg()
+            tf_oxts_transform.header.stamp = Time(nanoseconds=int(float(timestamp.strftime("%s.%f")) * 1e+9)).to_msg()
             tf_oxts_transform.header.frame_id = 'world'
             tf_oxts_transform.child_frame_id = 'base_link'
 
@@ -105,7 +109,8 @@ def save_dynamic_tf(bag, kitti, kitti_type, initial_time):
             tf_oxts_transform.transform = oxts_tf
             tf_oxts_msg.transforms.append(tf_oxts_transform)
 
-            bag.write((topic_name, serialize_message(tf_oxts_msg), tf_oxts_msg.transforms[0].header.stamp.sec))
+            bag.write((topic_name, serialize_message(tf_oxts_msg),
+                       timestamp_to_nanoseconds_from_epoch(tf_oxts_msg.transforms[0].header.stamp)))
 
     elif kitti_type.find("odom") != -1:
         timestamps = map(lambda x: initial_time + x.total_seconds(), kitti.timestamps)
@@ -132,7 +137,8 @@ def save_dynamic_tf(bag, kitti, kitti_type, initial_time):
             tf_stamped.transform = transform
             tf_msg.transforms.append(tf_stamped)
 
-            bag.write('/tf', serialize_message(tf_msg), tf_msg.transforms[0].header.stamp)
+            bag.write('/tf', serialize_message(tf_msg),
+                      timestamp_to_nanoseconds_from_epoch(tf_msg.transforms[0].header.stamp))
 
 
 def save_camera_data(bag, kitti_type, kitti, util, bridge, camera, camera_frame_id, topic_name, initial_time):
@@ -177,7 +183,7 @@ def save_camera_data(bag, kitti_type, kitti, util, bridge, camera, camera_frame_
         image_message = bridge.cv2_to_imgmsg(cv_image, encoding=encoding)
         image_message.header.frame_id = camera_frame_id
         if kitti_type.find("raw") != -1:
-            image_message.header.stamp = Time(seconds=float(datetime.strftime(dt, "%s.%f"))).to_msg()
+            image_message.header.stamp = Time(nanoseconds=int(float(datetime.strftime(dt, "%s.%f")) * 1e+9)).to_msg()
             topic_ext = "/image_raw"
         elif kitti_type.find("odom") != -1:
             image_message.header.stamp = Time(seconds=dt).to_msg()
@@ -190,8 +196,10 @@ def save_camera_data(bag, kitti_type, kitti, util, bridge, camera, camera_frame_
         camera_topic = create_topic(topic_name + topic_ext, "sensor_msgs/msg/Image", "cdr")
         bag.create_topic(camera_topic)
 
-        bag.write((topic_name + topic_ext, serialize_message(image_message), image_message.header.stamp.sec))
-        bag.write((topic_name + '/camera_info', serialize_message(calib), calib.header.stamp.sec))
+        bag.write((topic_name + topic_ext, serialize_message(image_message),
+                   timestamp_to_nanoseconds_from_epoch(image_message.header.stamp)))
+        bag.write((topic_name + '/camera_info', serialize_message(calib),
+                   timestamp_to_nanoseconds_from_epoch(calib.header.stamp)))
 
 
 # Helper functions from ROS1 http://docs.ros.org/melodic/api/sensor_msgs/html/point__cloud2_8py_source.html
@@ -211,6 +219,7 @@ def _get_struct_fmt(is_bigendian, fields, field_names=None):
             offset += field.count * datatype_length
 
     return fmt
+
 
 # Helper functions from ROS1 http://docs.ros.org/melodic/api/sensor_msgs/html/point__cloud2_8py_source.html
 def create_cloud(header, fields, points):
@@ -249,6 +258,7 @@ def create_cloud(header, fields, points):
                        row_step=cloud_struct.size * len(points),
                        data=buff.raw)
 
+
 def save_velo_data(bag, kitti, velo_frame_id, topic_name):
     print("Exporting velodyne data")
 
@@ -281,7 +291,7 @@ def save_velo_data(bag, kitti, velo_frame_id, topic_name):
         # create header
         header = Header()
         header.frame_id = velo_frame_id
-        header.stamp = Time(seconds=float(datetime.strftime(dt, "%s.%f"))).to_msg()
+        header.stamp = Time(nanoseconds=int(float(datetime.strftime(dt, "%s.%f")) * 1e+9)).to_msg()
 
         # fill pcl msg
         fields = [PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
@@ -291,7 +301,8 @@ def save_velo_data(bag, kitti, velo_frame_id, topic_name):
 
         pcl_msg = create_cloud(header, fields, points)
 
-        bag.write((topic_name + '/pointcloud', serialize_message(pcl_msg), pcl_msg.header.stamp.sec))
+        bag.write((topic_name + '/pointcloud', serialize_message(pcl_msg),
+                   timestamp_to_nanoseconds_from_epoch(pcl_msg.header.stamp)))
 
 
 def get_static_transform(from_frame_id, to_frame_id, transform):
@@ -335,10 +346,10 @@ def save_static_transforms(bag, transforms, timestamps):
         t = get_static_transform(from_frame_id=transform[0], to_frame_id=transform[1], transform=transform[2])
         tfm.transforms.append(t)
     for timestamp in timestamps:
-        time = Time(seconds=float(timestamp.strftime("%s.%f"))).to_msg()
+        time = Time(nanoseconds=int(float(timestamp.strftime("%s.%f")) * 1e+9)).to_msg()
         for i in range(len(tfm.transforms)):
             tfm.transforms[i].header.stamp = time
-        bag.write((topic_name, serialize_message(tfm), time.sec))
+        bag.write((topic_name, serialize_message(tfm), timestamp_to_nanoseconds_from_epoch(time)))
 
 
 def save_gps_fix_data(bag, kitti, gps_frame_id, topic_name):
@@ -348,12 +359,13 @@ def save_gps_fix_data(bag, kitti, gps_frame_id, topic_name):
     for timestamp, oxts in zip(kitti.timestamps, kitti.oxts):
         navsatfix_msg = NavSatFix()
         navsatfix_msg.header.frame_id = gps_frame_id
-        navsatfix_msg.header.stamp = Time(seconds=float(timestamp.strftime("%s.%f"))).to_msg()
+        navsatfix_msg.header.stamp = Time(nanoseconds=int(float(timestamp.strftime("%s.%f")) * 1e+9)).to_msg()
         navsatfix_msg.latitude = oxts.packet.lat
         navsatfix_msg.longitude = oxts.packet.lon
         navsatfix_msg.altitude = oxts.packet.alt
         navsatfix_msg.status.service = 1
-        bag.write((topic_name, serialize_message(navsatfix_msg), navsatfix_msg.header.stamp.sec))
+        bag.write((topic_name, serialize_message(navsatfix_msg),
+                   timestamp_to_nanoseconds_from_epoch(navsatfix_msg.header.stamp)))
 
 
 def save_gps_vel_data(bag, kitti, gps_frame_id, topic_name):
@@ -363,14 +375,15 @@ def save_gps_vel_data(bag, kitti, gps_frame_id, topic_name):
     for timestamp, oxts in zip(kitti.timestamps, kitti.oxts):
         twist_msg = TwistStamped()
         twist_msg.header.frame_id = gps_frame_id
-        twist_msg.header.stamp = Time(seconds=float(timestamp.strftime("%s.%f"))).to_msg()
+        twist_msg.header.stamp = Time(nanoseconds=int(float(timestamp.strftime("%s.%f")) * 1e+9)).to_msg()
         twist_msg.twist.linear.x = oxts.packet.vf
         twist_msg.twist.linear.y = oxts.packet.vl
         twist_msg.twist.linear.z = oxts.packet.vu
         twist_msg.twist.angular.x = oxts.packet.wf
         twist_msg.twist.angular.y = oxts.packet.wl
         twist_msg.twist.angular.z = oxts.packet.wu
-        bag.write((topic_name, serialize_message(twist_msg), twist_msg.header.stamp.sec))
+        bag.write(
+            (topic_name, serialize_message(twist_msg), timestamp_to_nanoseconds_from_epoch(twist_msg.header.stamp)))
 
 
 def create_bag(bag_path):
